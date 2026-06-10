@@ -60,6 +60,46 @@ router.get('/', (req, res) => {
   res.json({ success: true, data: list });
 });
 
+router.post('/supplement', roleMiddleware(ROLES.TEACHER, ROLES.ADMIN), (req, res) => {
+  const { keyword, category, status: eqStatus, damage_level, description, discovery_date, location, quantity } = req.body;
+  if (!damage_level || !description) return res.status(400).json({ success: false, message: '必填字段缺失(损坏等级/说明)' });
+
+  let sql = 'SELECT * FROM equipments WHERE 1=1';
+  const params = [];
+  if (keyword) { sql += ' AND (name LIKE ? OR code LIKE ? OR brand LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
+  if (category) { sql += ' AND category = ?'; params.push(category); }
+  if (eqStatus) { sql += ' AND status = ?'; params.push(eqStatus); }
+  sql += ' ORDER BY id DESC';
+  const equipments = db.prepare(sql).all(...params);
+
+  if (equipments.length === 0) return res.json({ success: true, data: { total: 0, succeeded: 0, failed: 0, results: [] } });
+
+  const results = [];
+  db.transaction(() => {
+    for (const eq of equipments) {
+      if (eq.status === 'SCRAPPED') { results.push({ equipment_id: eq.id, code: eq.code, name: eq.name, success: false, message: '该器材已报废，不能报损' }); continue; }
+      const pending = db.prepare(`SELECT COUNT(*) as cnt FROM damage_reports WHERE equipment_id = ? AND status NOT IN ('REPAIRED','SCRAPPED','REJECTED')`).get(eq.id).cnt;
+      if (pending > 0) { results.push({ equipment_id: eq.id, code: eq.code, name: eq.name, success: false, message: '该器材存在未结的报损单，不能重复报损' }); continue; }
+      const borrowing = db.prepare(`SELECT COUNT(*) as cnt FROM borrow_records WHERE equipment_id = ? AND status = 'BORROWED'`).get(eq.id).cnt;
+      if (borrowing > 0) { results.push({ equipment_id: eq.id, code: eq.code, name: eq.name, success: false, message: '借出未归还器材不能报废', borrowed: true }); continue; }
+      const code = generateReportCode();
+      const idemKey = `supplement-${req.user.id}-${eq.id}-${Date.now()}`;
+      try {
+        const info = db.prepare(`INSERT INTO damage_reports (idempotent_key, code, equipment_id, reporter_id, quantity, damage_level, description, discovery_date, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_QUOTE')`).run(idemKey, code, eq.id, req.user.id, quantity || 1, damage_level, description, discovery_date || new Date().toISOString().split('T')[0], location || eq.location);
+        db.prepare(`UPDATE equipments SET status = 'DAMAGED', updated_at = datetime('now','localtime') WHERE id = ? AND status = 'NORMAL'`).run(eq.id);
+        auditLog(req, 'SUPPLEMENT_DAMAGE_REPORT', 'DAMAGE_REPORT', info.lastInsertRowid, null, { code, equipment_id: eq.id, damage_level, supplement: true });
+        results.push({ equipment_id: eq.id, code: eq.code, name: eq.name, success: true, report_id: info.lastInsertRowid, report_code: code, message: '报损申请创建成功' });
+      } catch (err) {
+        results.push({ equipment_id: eq.id, code: eq.code, name: eq.name, success: false, message: err.message });
+      }
+    }
+  });
+
+  const succeeded = results.filter(r => r.success).length;
+  const failed = results.filter(r => !r.success).length;
+  res.json({ success: true, data: { total: equipments.length, succeeded, failed, results } });
+});
+
 router.get('/threshold', (req, res) => {
   res.json({ success: true, data: { threshold: QUOTE_THRESHOLD } });
 });

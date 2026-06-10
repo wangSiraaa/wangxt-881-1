@@ -13,6 +13,7 @@
           <el-button type="primary" :icon="Refresh" @click="load">刷新</el-button>
         </div>
         <div>
+          <el-button v-if="canReport" type="warning" :icon="DocumentAdd" @click="openSupplement">补录申请</el-button>
           <el-button v-if="canReport" type="primary" :icon="Plus" @click="openReport()">新建报损</el-button>
         </div>
       </div>
@@ -175,6 +176,69 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="supplementVisible" title="补录申请 - 按台账筛选批量报损" width="600px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom:16px">
+        按器材台账当前筛选条件批量创建报损单。借出未归还的器材将被自动跳过。
+      </el-alert>
+      <el-form :model="sf" label-width="110px">
+        <el-divider content-position="left">台账筛选条件（与器材台账页一致）</el-divider>
+        <el-form-item label="关键词"><el-input v-model="sf.keyword" placeholder="名称/编号/品牌" clearable /></el-form-item>
+        <el-form-item label="分类">
+          <el-select v-model="sf.category" placeholder="选择分类" clearable style="width:100%">
+            <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="器材状态">
+          <el-select v-model="sf.status" placeholder="状态" clearable style="width:100%">
+            <el-option label="正常" value="NORMAL" /><el-option label="借出中" value="BORROWED" /><el-option label="损坏" value="DAMAGED" /><el-option label="维修中" value="REPAIRING" /><el-option label="已报废" value="SCRAPPED" />
+          </el-select>
+        </el-form-item>
+        <el-divider content-position="left">报损信息（统一填写）</el-divider>
+        <el-form-item label="损坏数量" required><el-input-number v-model="sf.quantity" :min="1" style="width:180px" /></el-form-item>
+        <el-form-item label="损坏等级" required>
+          <el-radio-group v-model="sf.damage_level">
+            <el-radio value="MINOR">轻微</el-radio>
+            <el-radio value="MODERATE">中度</el-radio>
+            <el-radio value="SEVERE">重度</el-radio>
+            <el-radio value="TOTAL">完全损坏</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="发现日期" required><el-date-picker v-model="sf.discovery_date" type="date" value-format="YYYY-MM-DD" style="width:100%" /></el-form-item>
+        <el-form-item label="损坏地点"><el-input v-model="sf.location" /></el-form-item>
+        <el-form-item label="损坏说明" required><el-input v-model="sf.description" type="textarea" :rows="3" placeholder="统一描述损坏情况" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="supplementVisible=false">取消</el-button>
+        <el-button type="primary" @click="submitSupplement" :loading="supplementLoading">提交补录</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="suppResultVisible" title="补录申请结果" width="680px">
+      <el-descriptions :column="3" border size="small" style="margin-bottom:16px">
+        <el-descriptions-item label="匹配器材">{{ suppResult.total }}</el-descriptions-item>
+        <el-descriptions-item label="成功"><span style="color:#67c23a;font-weight:600">{{ suppResult.succeeded }}</span></el-descriptions-item>
+        <el-descriptions-item label="跳过/失败"><span style="color:#f56c6c;font-weight:600">{{ suppResult.failed }}</span></el-descriptions-item>
+      </el-descriptions>
+      <el-table :data="suppResult.results" size="small" border max-height="320">
+        <el-table-column prop="code" label="器材编号" width="130" />
+        <el-table-column prop="name" label="器材名称" min-width="120" show-overflow-tooltip />
+        <el-table-column label="结果" width="80" align="center">
+          <template #default="{row}">
+            <el-tag :type="row.success ? 'success' : 'danger'" size="small">{{ row.success ? '成功' : '拒绝' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="报损单号" width="160">
+          <template #default="{row}">{{ row.report_code || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="message" label="说明" min-width="160" show-overflow-tooltip>
+          <template #default="{row}">
+            <span :style="{color: row.borrowed ? '#e6a23c' : row.success ? '#67c23a' : '#f56c6c'}">{{ row.message }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer><el-button type="primary" @click="suppResultVisible=false;load()">关闭并刷新</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
@@ -183,7 +247,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../utils/request'
 import { useUserStore } from '../stores/user'
-import { Warning, Refresh, Plus, Upload, Paperclip } from '@element-plus/icons-vue'
+import { Warning, Refresh, Plus, Upload, Paperclip, DocumentAdd } from '@element-plus/icons-vue'
 
 const userStore = useUserStore()
 const token = computed(() => userStore.token)
@@ -206,12 +270,35 @@ const rf = reactive({ equipment_id: null, idempotent_key: '', quantity: 1, damag
 const qf = reactive({ amount: 0, vendor: '', estimate_days: null, quote_detail: '', remark: '' })
 const af = reactive({ approved: true, decision: 'REPAIR', remark: '' })
 
+const supplementVisible = ref(false); const supplementLoading = ref(false); const suppResultVisible = ref(false)
+const categories = ref([])
+const sf = reactive({ keyword: '', category: '', status: '', quantity: 1, damage_level: 'MODERATE', discovery_date: new Date().toISOString().split('T')[0], location: '', description: '' })
+const suppResult = reactive({ total: 0, succeeded: 0, failed: 0, results: [] })
+
 const onFileChange = () => {}
 const load = async () => {
   loading.value = true
   try { const r = await request.get('/damage-reports', { params: { status: statusFilter.value, decision: decisionFilter.value } }); list.value = r.data } finally { loading.value = false }
 }
 const loadThreshold = async () => { try { const r = await request.get('/damage-reports/threshold'); threshold.value = r.data.threshold } catch (e) {} }
+const loadCategories = async () => { try { const r = await request.get('/equipments/categories'); categories.value = r.data } catch (e) {} }
+const openSupplement = async () => {
+  Object.assign(sf, { keyword: '', category: '', status: '', quantity: 1, damage_level: 'MODERATE', discovery_date: new Date().toISOString().split('T')[0], location: '', description: '' })
+  await loadCategories()
+  supplementVisible.value = true
+}
+const submitSupplement = async () => {
+  if (!sf.damage_level || !sf.description) { ElMessage.warning('请完善损坏等级和说明'); return }
+  supplementLoading.value = true
+  try {
+    const r = await request.post('/damage-reports/supplement', sf)
+    Object.assign(suppResult, r.data)
+    supplementVisible.value = false
+    suppResultVisible.value = true
+    const borrowed = r.data.results.filter(x => x.borrowed).length
+    if (borrowed > 0) ElMessage.warning(`${borrowed} 件借出未归还器材已跳过`)
+  } catch (e) {} finally { supplementLoading.value = false }
+}
 const openReport = async () => {
   Object.assign(rf, { equipment_id: null, idempotent_key: '', quantity: 1, damage_level: 'MODERATE', discovery_date: new Date().toISOString().split('T')[0], location: '', description: '' })
   rf.idempotent_key = `report-${userStore.user.id}-${Date.now()}`
@@ -247,5 +334,5 @@ const showTimeline = async (row) => {
   cur.value = row; timeline.value = []; timelineVisible.value = true
   try { const r = await request.get(`/damage-reports/${row.id}/timeline`); timeline.value = r.data } catch (e) {}
 }
-onMounted(() => { load(); loadThreshold() })
+onMounted(() => { load(); loadThreshold(); loadCategories() })
 </script>

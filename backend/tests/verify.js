@@ -222,6 +222,65 @@ const scenario4_HistoryTabsRegression = async () => {
   log('场景4 结束\n');
 };
 
+const scenario5_SupplementApply = async () => {
+  log('场景5: 补录申请 - 成功路径 + 借出未归还拒绝路径', 'SCENARIO');
+  const adminToken = await login('admin1');
+  const teacherToken = await login('teacher1');
+
+  log('步骤1: 创建两件器材 - 一件将借出不归还，一件保持正常');
+  const eq1Code = `EQ-SUPP-NORM-${Date.now()}`;
+  const eq2Code = `EQ-SUPP-BORR-${Date.now()}`;
+  const cr1 = await request('/api/equipments', { method: 'POST', token: adminToken, body: { code: eq1Code, name: '补录测试-正常器材', category: '球类', location: '测试区A', total_quantity: 5 } });
+  record('创建正常器材', cr1.ok && cr1.data.success, cr1.data.message || '');
+  const eq1Id = cr1.data?.data?.id;
+
+  const cr2 = await request('/api/equipments', { method: 'POST', token: adminToken, body: { code: eq2Code, name: '补录测试-借出器材', category: '球类', location: '测试区B', total_quantity: 3 } });
+  record('创建借出器材', cr2.ok && cr2.data.success, cr2.data.message || '');
+  const eq2Id = cr2.data?.data?.id;
+
+  log('步骤2: 对第二件器材执行借用(不归还)');
+  const br = await request('/api/borrows', { method: 'POST', token: teacherToken, body: { equipment_id: eq2Id, quantity: 1, purpose: '补录场景-借出不归还' } });
+  record('借用器材(不归还)', br.ok && br.data.success, br.data.message || '');
+
+  log('步骤3: 补录申请 - 按分类"球类"筛选，同时覆盖正常和借出器材');
+  const sr = await request('/api/damage-reports/supplement', { method: 'POST', token: teacherToken, body: { category: '球类', damage_level: 'MODERATE', description: '补录场景5:批量报损测试', discovery_date: '2025-06-10', quantity: 1 } });
+  record('补录申请接口返回成功', sr.ok && sr.data.success, `total=${sr.data?.data?.total}, succeeded=${sr.data?.data?.succeeded}, failed=${sr.data?.data?.failed}`);
+
+  const suppResults = sr.data?.data?.results || [];
+
+  log('步骤4: 验证借出未归还器材被拒绝');
+  const borrowedItem = suppResults.find(r => r.equipment_id === eq2Id);
+  const borrowedRejected = borrowedItem && !borrowedItem.success && borrowedItem.borrowed === true && borrowedItem.message.includes('借出未归还');
+  record('【核心验证】借出未归还器材补录被拒绝', borrowedRejected, borrowedItem ? `message=${borrowedItem.message}, borrowed=${borrowedItem.borrowed}` : '未找到对应结果');
+
+  log('步骤5: 验证正常器材补录成功');
+  const normalItem = suppResults.find(r => r.equipment_id === eq1Id && r.success === true);
+  record('【核心验证】正常器材补录成功', !!normalItem, normalItem ? `report_code=${normalItem.report_code}` : '未找到成功结果');
+
+  log('步骤6: 验证补录成功的报损单确实存在');
+  if (normalItem) {
+    const dr = await request(`/api/damage-reports/${normalItem.report_id}`, { token: adminToken });
+    const reportOk = dr.ok && dr.data?.data?.status === 'PENDING_QUOTE' && dr.data?.data?.equipment_id === eq1Id;
+    record('补录报损单存在于数据库且状态正确', reportOk, `status=${dr.data?.data?.status}`);
+  }
+
+  log('步骤7: 补录申请 - 仅筛选借出状态的器材，应全部被拒绝');
+  const eq3Code = `EQ-SUPP-BOR2-${Date.now()}`;
+  const cr3 = await request('/api/equipments', { method: 'POST', token: adminToken, body: { code: eq3Code, name: '补录测试-纯借出器材', category: '田径器材', location: '测试区C', total_quantity: 2 } });
+  const eq3Id = cr3.data?.data?.id;
+  if (eq3Id) {
+    await request('/api/borrows', { method: 'POST', token: teacherToken, body: { equipment_id: eq3Id, quantity: 2, purpose: '补录场景-全部借出' } });
+    const sr3 = await request('/api/damage-reports/supplement', { method: 'POST', token: teacherToken, body: { status: 'BORROWED', keyword: '补录测试-纯借出', damage_level: 'SEVERE', description: '补录场景5:纯借出器材', discovery_date: '2025-06-10', quantity: 1 } });
+    const sr3Results = sr3.data?.data?.results || [];
+    const allBorrowedRejected = sr3Results.length > 0 && sr3Results.every(r => !r.success && r.borrowed === true);
+    record('【核心验证】纯借出器材补录全部被拒绝', allBorrowedRejected, `total=${sr3.data?.data?.total}, succeeded=${sr3.data?.data?.succeeded}, results=${JSON.stringify(sr3Results.map(r => ({name:r.name,success:r.success,borrowed:r.borrowed,message:r.message})))}`);
+  } else {
+    record('【核心验证】纯借出器材补录全部被拒绝', false, '未能创建测试器材');
+  }
+
+  log('场景5 结束\n');
+};
+
 const runAll = async () => {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
   console.log('║       校园体育器材报损系统 - 端到端验证脚本                  ║');
@@ -232,6 +291,7 @@ const runAll = async () => {
     await scenario2_ExceedQuoteNeedGeneralApproval();
     await scenario3_IdempotentAndNoDuplicate();
     await scenario4_HistoryTabsRegression();
+    await scenario5_SupplementApply();
   } catch (e) {
     log(`脚本异常终止: ${e.message}`, 'FAIL');
     console.error(e);
