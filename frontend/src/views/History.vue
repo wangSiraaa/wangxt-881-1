@@ -2,7 +2,7 @@
   <div class="page-wrap">
     <div class="page-card">
       <div class="page-title"><el-icon><Clock /></el-icon>历史查询</div>
-      <el-tabs v-model="tab">
+      <el-tabs v-model="tab" @tab-change="onTabChange">
         <el-tab-pane label="库存变更记录" name="inventory">
           <div class="toolbar">
             <el-select v-model="invType" placeholder="变更类型" clearable style="width:160px" @change="loadInv">
@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import request from '../utils/request'
 import { useUserStore } from '../stores/user'
 import { Clock } from '@element-plus/icons-vue'
@@ -107,6 +107,13 @@ const invTypeMap = { PURCHASE:'采购入库', BORROW_OUT:'借用出库', RETURN:
 const borrowList = ref([]); const borrowLoading = ref(false)
 const damageList = ref([]); const damageLoading = ref(false)
 const auditList = ref([]); const auditLoading = ref(false)
+
+const LOADERS = {
+  inventory: () => loadInv(),
+  borrow: () => loadBorrow(),
+  damage: () => loadDamage(),
+  audit: () => loadAudit(),
+}
 
 const loadInv = async () => {
   invLoading.value = true
@@ -127,15 +134,14 @@ const loadDamage = async () => {
 const loadAudit = async () => {
   if (!userStore.hasRole(['ADMIN', 'GENERAL_AFFAIRS'])) return
   auditLoading.value = true
-  try { auditList.value = (await request.get('/audit/logs')).data?.list || [] } catch (e) {} finally { auditLoading.value = false }
+  try { auditList.value = (await request.get('/audit/logs')).data?.list || [] } catch (e) { console.warn('[audit] 加载审计日志失败:', e) } finally { auditLoading.value = false }
 }
 const onTabChange = (t) => {
-  if (t === 'inventory' && invList.value.length === 0) loadInv()
-  if (t === 'borrow' && borrowList.value.length === 0) loadBorrow()
-  if (t === 'damage' && damageList.value.length === 0) loadDamage()
-  if (t === 'audit' && auditList.value.length === 0) loadAudit()
+  const loader = LOADERS[t]
+  if (loader) loader()
 }
+watch(tab, onTabChange)
 onMounted(() => {
-  loadInv()
+  onTabChange(tab.value)
 })
 </script>

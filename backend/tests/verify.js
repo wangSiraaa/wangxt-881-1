@@ -186,6 +186,42 @@ const scenario3_IdempotentAndNoDuplicate = async () => {
   log('场景3 结束\n');
 };
 
+const scenario4_HistoryTabsRegression = async () => {
+  log('场景4: 历史查询页签回归验证', 'SCENARIO');
+  const adminToken = await login('admin1');
+  const teacherToken = await login('teacher1');
+  const unwrap = (r) => r?.data?.data ?? r?.data ?? r;
+
+  log('步骤1: 库存变更记录接口');
+  const inv = await request('/api/audit/inventory-changes?limit=1000', { token: adminToken });
+  const invList = unwrap(inv);
+  record('库存变更接口返回成功+有数据', inv.ok && Array.isArray(invList) && invList.length > 0, `count=${Array.isArray(invList) ? invList.length : 0}`);
+
+  log('步骤2: 借用历史接口');
+  const br = await request('/api/borrows', { token: teacherToken });
+  const brList = unwrap(br);
+  record('借用历史接口返回成功+有数据', br.ok && Array.isArray(brList) && brList.length > 0, `count=${Array.isArray(brList) ? brList.length : 0}`);
+
+  log('步骤3: 报损历史接口');
+  const dr = await request('/api/damage-reports', { token: teacherToken });
+  const drList = unwrap(dr);
+  record('报损历史接口返回成功+有数据', dr.ok && Array.isArray(drList) && drList.length > 0, `count=${Array.isArray(drList) ? drList.length : 0}`);
+
+  log('步骤4: 审计日志接口(仅管理员可见)');
+  const al = await request('/api/audit/logs', { token: adminToken });
+  const alData = unwrap(al);
+  const alList = alData?.list || alData;
+  record('审计日志接口返回成功+有数据', al.ok && Array.isArray(alList) && alList.length > 0, `count=${Array.isArray(alList) ? alList.length : 0}`);
+
+  log('步骤5: 非管理员访问审计日志应被拒绝或返回空');
+  const alNoPerm = await request('/api/audit/logs', { token: teacherToken });
+  const noPermData = unwrap(alNoPerm);
+  const noPermList = noPermData?.list || noPermData;
+  record('非管理员审计日志返回空(权限限制)', alNoPerm.ok ? (!Array.isArray(noPermList) || noPermList.length === 0) : true, `status=${alNoPerm.status}, len=${Array.isArray(noPermList) ? noPermList.length : 'N/A'}`);
+
+  log('场景4 结束\n');
+};
+
 const runAll = async () => {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
   console.log('║       校园体育器材报损系统 - 端到端验证脚本                  ║');
@@ -195,6 +231,7 @@ const runAll = async () => {
     await scenario1_NotReturnedCannotScrap();
     await scenario2_ExceedQuoteNeedGeneralApproval();
     await scenario3_IdempotentAndNoDuplicate();
+    await scenario4_HistoryTabsRegression();
   } catch (e) {
     log(`脚本异常终止: ${e.message}`, 'FAIL');
     console.error(e);
