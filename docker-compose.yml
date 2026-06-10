@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./backend/uploads:/app/backend/uploads
+    environment:
+      - NODE_ENV=production
+      - JWT_SECRET=sports-equipment-secret-key-2024
+      - PORT=3000
+      - QUOTE_THRESHOLD=1000
+    restart: unless-stopped
